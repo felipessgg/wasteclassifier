@@ -1,174 +1,366 @@
 <!doctype html>
-<!--
-  SCU Smart Waste Dashboard: STARTER PROTOTYPE for PROG6002 students.
-
-  How the pieces fit together
-  ---------------------------
-    index.html + app.js     the tablet "terminal": classifies rubbish and PUBLISHES MQTT messages
-    dashboard.html + .js    this page: SUBSCRIBES to those messages and displays them
-    bins.js                 shared list of bins (names, colours) used by both pages
-
-  This file is only the page STRUCTURE (the boxes). Look for the numbered "SECTION" comments below; every
-  box has an id that dashboard.js fills in. To add a widget: (1) add a <section> here, (2) write a render
-  function in dashboard.js, (3) call it from renderAll().
--->
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>SCU Smart Waste Dashboard</title>
+  <title>Smart Bin Dashboard</title>
 
-  <!-- Leaflet: a small open-source map library. Tiles come from OpenStreetMap. Docs: https://leafletjs.com -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
 
   <style>
-    /* ---- Theme: change these colours to restyle the whole page ---- */
     :root {
-      --bg:#f2f5f7; --card:#ffffff; --ink:#163247; --muted:#5b6f7e; --line:#dce6eb; --brand:#123047;
-      --ok:#12a150; --warn:#e8a200; --bad:#d92d20; --off:#98a2b3;
+      --bg:#f3f6f8;
+      --card:#ffffff;
+      --ink:#183245;
+      --muted:#647784;
+      --line:#dbe5ea;
+      --brand:#123047;
+      --ok:#169c4d;
+      --warn:#d99600;
+      --bad:#cf2e2e;
     }
+
     * { box-sizing:border-box; }
-    body { margin:0; font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--ink); }
-    header { background:var(--brand); color:#fff; padding:12px 20px; display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between; }
-    header h1 { margin:0; font-size:20px; }
-    .eyebrow { display:block; font-size:11px; letter-spacing:.1em; opacity:.7; }
-    main { padding:16px 20px 32px; display:grid; gap:16px; max-width:1300px; margin:0 auto; }
-    .panel { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
-    .panel h2 { margin:0 0 10px; font-size:16px; }
-    .grid { display:grid; gap:16px; }
-    .cols-2 { grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); }
-    .cols-4 { grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); }
-    .cols-kpi { grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); }
-    label { display:flex; flex-direction:column; gap:3px; font-size:12px; color:var(--muted); }
-    input, select, button { font:inherit; padding:6px 9px; border:1px solid var(--line); border-radius:6px; background:#fff; color:var(--ink); }
-    button { cursor:pointer; } button:hover { background:#eef3f6; }
-    button.primary { background:var(--brand); color:#fff; border-color:var(--brand); }
-    .toolbar { display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end; }
-    .toolbar .grow { flex:1 1 240px; }
-    .pill { padding:4px 12px; border-radius:99px; font-size:13px; font-weight:600; background:var(--off); color:#fff; }
-    .pill.ok { background:var(--ok); } .pill.warn { background:var(--warn); } .pill.bad { background:var(--bad); }
-    .help { color:var(--muted); font-size:12px; margin:6px 0 0; }
-    code { background:#eef3f6; padding:1px 4px; border-radius:4px; font-size:12px; }
 
-    /* KPI tiles */
-    .kpi { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px 14px; }
-    .kpi span { font-size:12px; color:var(--muted); }
-    .kpi strong { display:block; font-size:26px; line-height:1.2; }
+    body {
+      margin:0;
+      font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+      background:var(--bg);
+      color:var(--ink);
+    }
 
-    /* Bin cards (SECTION 3). The coloured stripe uses the colour from bins.js. */
-    .bin-card { background:var(--card); border:1px solid var(--line); border-top:8px solid var(--line); border-radius:10px; padding:12px 14px; }
-    .bin-card h3 { margin:0; font-size:15px; }
-    .bin-card .sub { font-size:12px; color:var(--muted); min-height:32px; }
-    .gauge { height:14px; background:#e6edf1; border-radius:7px; overflow:hidden; margin:8px 0 4px; }
-    .gauge > div { height:100%; width:0; transition:width .4s, background .4s; }
-    .bin-card .row { display:flex; justify-content:space-between; font-size:13px; }
-    .state { font-weight:700; }
-    .state.ok { color:var(--ok); } .state.warn { color:#a87500; } .state.bad { color:var(--bad); }
+    header {
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:16px;
+      padding:16px 22px;
+      background:var(--brand);
+      color:#fff;
+    }
 
-    #map { height:380px; border-radius:8px; border:1px solid var(--line); }
-    .note-empty { color:var(--muted); font-style:italic; }
+    header h1 { margin:0; font-size:21px; }
+    header p { margin:2px 0 0; opacity:.75; font-size:12px; }
 
-    /* Simple bar rows used for "top items" and per-bin counts */
-    .barrow { display:grid; grid-template-columns:110px 1fr 40px; gap:8px; align-items:center; margin:4px 0; font-size:13px; }
-    .bar { height:12px; background:#e6edf1; border-radius:6px; overflow:hidden; }
-    .bar > div { height:100%; background:var(--brand); }
+    main {
+      max-width:1350px;
+      margin:0 auto;
+      padding:18px;
+      display:grid;
+      gap:16px;
+    }
 
-    table { width:100%; border-collapse:collapse; font-size:13px; }
-    th, td { text-align:left; padding:5px 8px; border-bottom:1px solid var(--line); }
-    th { color:var(--muted); font-weight:600; font-size:12px; }
-    .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; background:var(--off); }
-    .dot.ok { background:var(--ok); } .dot.bad { background:var(--bad); }
-    .tablewrap { overflow-x:auto; }
-    #rawLog { max-height:220px; overflow:auto; margin:0; padding-left:18px; font:12px/1.4 ui-monospace,Consolas,monospace; }
-    footer { text-align:center; color:var(--muted); font-size:12px; padding:0 0 20px; }
-    @media (prefers-color-scheme: dark) {
-      :root { --bg:#0f1a22; --card:#182632; --ink:#e6eef3; --muted:#9db0bd; --line:#2a3d4b; --brand:#2b6d94; }
-      input, select, button { background:#20323f; }
-      button:hover { background:#28404f; } .gauge, .bar { background:#2a3d4b; } code { background:#20323f; }
+    .panel, .kpi, .bin-card {
+      background:var(--card);
+      border:1px solid var(--line);
+      border-radius:11px;
+    }
+
+    .panel { padding:15px; }
+
+    .status {
+      padding:5px 11px;
+      border-radius:99px;
+      background:#83919a;
+      font-weight:700;
+      font-size:13px;
+    }
+
+    .status.ok { background:var(--ok); }
+    .status.warn { background:var(--warn); }
+    .status.bad { background:var(--bad); }
+
+    .toolbar {
+      display:grid;
+      grid-template-columns:minmax(280px,2fr) 1fr 1fr auto;
+      gap:10px;
+      align-items:end;
+    }
+
+    label {
+      display:grid;
+      gap:4px;
+      font-size:12px;
+      color:var(--muted);
+    }
+
+    input, button, select {
+      min-height:39px;
+      border:1px solid #c9d5db;
+      border-radius:7px;
+      padding:7px 9px;
+      background:#fff;
+      color:var(--ink);
+      font:inherit;
+    }
+
+    button {
+      cursor:pointer;
+      font-weight:650;
+    }
+
+    button.primary {
+      background:var(--brand);
+      color:#fff;
+      border-color:var(--brand);
+    }
+
+    .topics {
+      display:flex;
+      flex-wrap:wrap;
+      gap:8px;
+      margin-top:12px;
+      color:var(--muted);
+      font-size:12px;
+    }
+
+    code {
+      background:#eef3f5;
+      border-radius:5px;
+      padding:2px 5px;
+    }
+
+    .kpis {
+      display:grid;
+      grid-template-columns:repeat(4,1fr);
+      gap:12px;
+    }
+
+    .kpi { padding:12px 14px; }
+    .kpi span { display:block; color:var(--muted); font-size:12px; }
+    .kpi strong { display:block; margin-top:3px; font-size:24px; }
+
+    .bins {
+      display:grid;
+      grid-template-columns:repeat(3,1fr);
+      gap:12px;
+    }
+
+    .bin-card { padding:14px; }
+    .bin-card.alert { border-color:#e0aa4e; background:#fffaf0; }
+
+    .bin-title {
+      display:flex;
+      justify-content:space-between;
+      gap:10px;
+      align-items:center;
+      margin-bottom:12px;
+    }
+
+    .bin-title h3 { margin:0; font-size:16px; }
+
+    .level {
+      font-weight:800;
+      font-size:20px;
+    }
+
+    .gauge {
+      height:16px;
+      background:#e6edf1;
+      border-radius:99px;
+      overflow:hidden;
+    }
+
+    .gauge div {
+      height:100%;
+      width:0;
+      background:var(--ok);
+      transition:width .3s;
+    }
+
+    .alert-text {
+      min-height:20px;
+      margin-top:8px;
+      font-size:12px;
+      color:var(--muted);
+    }
+
+    .alert-text.bad { color:var(--bad); font-weight:700; }
+
+    .two {
+      display:grid;
+      grid-template-columns:1fr 1fr;
+      gap:16px;
+    }
+
+    h2 { margin:0 0 10px; font-size:17px; }
+
+    #map {
+      height:410px;
+      border:1px solid var(--line);
+      border-radius:8px;
+    }
+
+    .map-note {
+      margin:8px 0 0;
+      color:var(--muted);
+      font-size:12px;
+    }
+
+    .system-grid {
+      display:grid;
+      grid-template-columns:repeat(2,1fr);
+      gap:8px;
+    }
+
+    .system-item {
+      padding:10px;
+      border-radius:8px;
+      background:#f6f9fa;
+    }
+
+    .system-item span {
+      display:block;
+      color:var(--muted);
+      font-size:11px;
+    }
+
+    .system-item strong {
+      display:block;
+      margin-top:2px;
+    }
+
+    .chart-wrap { height:300px; }
+
+    table {
+      width:100%;
+      border-collapse:collapse;
+      font-size:13px;
+    }
+
+    th, td {
+      text-align:left;
+      padding:7px;
+      border-bottom:1px solid var(--line);
+    }
+
+    th {
+      color:var(--muted);
+      font-size:12px;
+    }
+
+    .raw {
+      max-height:210px;
+      overflow:auto;
+      margin:0;
+      padding-left:20px;
+      font:12px/1.4 ui-monospace,Consolas,monospace;
+    }
+
+    .muted { color:var(--muted); }
+
+    @media (max-width:900px) {
+      .toolbar, .kpis, .bins, .two { grid-template-columns:1fr; }
+      #map { height:340px; }
     }
   </style>
 </head>
+
 <body>
   <header>
-    <div><span class="eyebrow">PROG6002 · STARTER PROTOTYPE</span><h1>SCU Smart Waste Dashboard</h1></div>
-    <div id="mqttStatus" class="pill">Disconnected</div>
+    <div>
+      <h1>Smart 3-Compartment Bin Dashboard</h1>
+      <p>PROG6002 · MQTT telemetry + smartphone GPS</p>
+    </div>
+    <div id="mqttStatus" class="status">Disconnected</div>
   </header>
 
   <main>
-    <!-- ============ SECTION 1: MQTT connection + controls ============
-         The broker URL and topic are the two things that must match what the tablet (index.html) uses.
-         "Simulate" feeds fake messages through the same code path so you can build the dashboard
-         without a tablet or bins. -->
     <section class="panel">
+      <h2>MQTT</h2>
       <div class="toolbar">
-        <label class="grow">Broker WebSocket URL <input id="brokerUrl"></label>
-        <label class="grow">Subscribe topic(s), comma separated <input id="topicFilter"></label>
-        <button id="connectButton" class="primary">Connect</button>
-        <button id="simButton">Start simulator</button>
-        <button id="resetButton">Reset data</button>
-        <label>Show device
-          <select id="deviceSelect"><option value="">All devices</option></select>
+        <label>
+          Broker WebSocket URL
+          <input id="brokerUrl" value="wss://5d2b1e680bc4427bbacc7535a47a72eb.s1.eu.hivemq.cloud:8884/mqtt">
         </label>
+
+        <label>
+          Username
+          <input id="mqttUsername" value="user1">
+        </label>
+
+        <label>
+          Password
+          <input id="mqttPassword" type="password" autocomplete="current-password">
+        </label>
+
+        <button id="connectButton" class="primary">Connect</button>
       </div>
-      <p class="help">Use the same topic as the tablet's <em>Publish topic</em>. <code>+</code> matches one topic level and
-        <code>#</code> matches everything below, e.g. <code>prog6002/2026/+/classification</code> listens to every team.
-        On a public broker anyone can publish to your topic, so treat all incoming data as untrusted.</p>
+
+      <div class="topics">
+        Listening to
+        <code>smartbin/+/telemetry</code>
+        <code>smartbin/+/location</code>
+      </div>
     </section>
 
-    <!-- ============ SECTION 2: headline numbers (KPIs) ============ -->
-    <section class="grid cols-kpi" id="kpis"></section>
+    <section class="kpis">
+      <div class="kpi"><span>Telemetry devices</span><strong id="deviceCount">0</strong></div>
+      <div class="kpi"><span>Compartments over 85%</span><strong id="alertCount">0</strong></div>
+      <div class="kpi"><span>GPS devices</span><strong id="gpsCount">0</strong></div>
+      <div class="kpi"><span>Last MQTT message</span><strong id="lastMessage">—</strong></div>
+    </section>
 
-    <!-- ============ SECTION 3: bin status and level of each bin ============ -->
-    <section class="grid cols-4" id="binCards"></section>
+    <section class="bins">
+      <article class="bin-card" id="recycledCard">
+        <div class="bin-title"><h3>Recycled</h3><span class="level" id="recycledValue">0%</span></div>
+        <div class="gauge"><div id="recycledBar"></div></div>
+        <div class="alert-text" id="recycledAlert">OK</div>
+      </article>
 
-    <!-- ============ SECTION 4: map + device list ============ -->
-    <section class="grid cols-2">
+      <article class="bin-card" id="organicCard">
+        <div class="bin-title"><h3>Organic / Green</h3><span class="level" id="organicValue">0%</span></div>
+        <div class="gauge"><div id="organicBar"></div></div>
+        <div class="alert-text" id="organicAlert">OK</div>
+      </article>
+
+      <article class="bin-card" id="landfillCard">
+        <div class="bin-title"><h3>Landfill</h3><span class="level" id="landfillValue">0%</span></div>
+        <div class="gauge"><div id="landfillBar"></div></div>
+        <div class="alert-text" id="landfillAlert">OK</div>
+      </article>
+    </section>
+
+    <section class="two">
       <article class="panel">
-        <h2>Bin locations</h2>
+        <h2>Live GPS location</h2>
         <div id="map"></div>
-        <p id="mapNote" class="help"></p>
+        <p id="mapNote" class="map-note">Waiting for a GPS message from the smartphone.</p>
       </article>
+
       <article class="panel">
-        <h2>Devices</h2>
-        <div class="tablewrap"><table>
-          <thead><tr><th>Device</th><th>Status</th><th>Last seen</th><th>Items</th><th>Fullest bin</th><th>Location</th></tr></thead>
-          <tbody id="deviceRows"></tbody>
-        </table></div>
+        <h2>Bin system state</h2>
+        <div class="system-grid">
+          <div class="system-item"><span>Bin ID</span><strong id="binId">—</strong></div>
+          <div class="system-item"><span>Health</span><strong id="health">—</strong></div>
+          <div class="system-item"><span>CPU temperature</span><strong id="cpuTemp">—</strong></div>
+          <div class="system-item"><span>Uptime</span><strong id="uptime">—</strong></div>
+          <div class="system-item"><span>Last telemetry</span><strong id="lastTelemetry">—</strong></div>
+          <div class="system-item"><span>Last GPS</span><strong id="lastGps">—</strong></div>
+        </div>
+
+        <h2 style="margin-top:18px">GPS devices</h2>
+        <table>
+          <thead><tr><th>Device</th><th>Latitude</th><th>Longitude</th><th>Accuracy</th></tr></thead>
+          <tbody id="gpsRows"><tr><td colspan="4" class="muted">No GPS received yet.</td></tr></tbody>
+        </table>
       </article>
     </section>
 
-    <!-- ============ SECTION 5: statistics about rubbish collected ============ -->
-    <section class="grid cols-2">
-      <article class="panel"><h2>Items per bin</h2><div id="binCounts"></div></article>
-      <article class="panel"><h2>Most common items</h2><div id="topItems"></div></article>
-      <article class="panel">
-        <h2>Activity: items per minute (last <span id="timelineMinutes"></span> min)</h2>
-        <div id="timeline"></div>
-      </article>
-      <article class="panel">
-        <h2>Latest classifications</h2>
-        <div class="tablewrap"><table>
-          <thead><tr><th>Time</th><th>Device</th><th>Item</th><th>Bin</th><th>Conf.</th></tr></thead>
-          <tbody id="recentRows"></tbody>
-        </table></div>
-      </article>
-    </section>
-
-    <!-- ============ SECTION 6: raw messages, for debugging ============
-         When something does not display, look here first: is the message arriving, and does its JSON have the
-         fields dashboard.js expects? -->
     <section class="panel">
-      <h2>Raw MQTT messages (debug)</h2>
-      <ol id="rawLog"></ol>
+      <h2>Fill-level history</h2>
+      <div class="chart-wrap"><canvas id="historyChart"></canvas></div>
+    </section>
+
+    <section class="panel">
+      <h2>Raw MQTT messages</h2>
+      <ol id="rawLog" class="raw"></ol>
     </section>
   </main>
 
-  <footer>Prototype for teaching. Extend it: history charts, alerts, collection routes, saved data&hellip; See the TODO ideas in dashboard.js.</footer>
-
-  <!-- Scripts. Order matters: libraries first, then bins.js (defines BINS), then our code. -->
   <script src="https://unpkg.com/mqtt@5.10.4/dist/mqtt.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="bins.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
   <script src="dashboard.js"></script>
 </body>
 </html>
