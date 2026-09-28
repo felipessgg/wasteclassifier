@@ -9,7 +9,7 @@ This is an initiative to turn old smart phones and tablet into a smart waste ter
 2. Request the rear camera and run inference locally.
 3. Reject low-confidence and unstable predictions.
 4. Publish a structured JSON result over MQTT WebSockets.
-5. Observe reconnect state, message timing and old-device performance.
+5. Observe reconnect state, message timing and old-device performance. 
 
 ## How it works: object → bin
 
