@@ -122,6 +122,7 @@ function rememberPasswordChanged() {
 // The browser's geolocation (GPS, or Wi-Fi/cell positioning on devices without GPS) is watched while the box
 // is ticked. Messages carry the latest fix, rounded to the chosen precision, or "location": null.
 let locationWatch = null, lastFix = null, lastLocationProblem = "";
+let locationPublishTimer = null;
 
 function locationChanged() {
   if ($("includeLocation").checked) startLocation(); else { stopLocation(); log("Location switched off; messages will have \"location\": null."); }
@@ -166,6 +167,44 @@ function locationPayload() {
     timestamp: new Date(lastFix.timestamp).toISOString(),
     age_s: Math.round((Date.now() - lastFix.timestamp) / 1000)
   };
+}
+
+function publishLocationNow() {
+  if (!mqttClient?.connected) return;
+
+  const location = locationPayload();
+  if (!location) return;
+
+  const deviceId = value("deviceId") || "BIN";
+  const topic = `smartbin/${deviceId}/location`;
+
+  mqttClient.publish(
+    topic,
+    JSON.stringify({
+      device_id: deviceId,
+      location
+    }),
+    { qos: 1, retain: true },
+    error => {
+      if (error) log(`Location publish failed: ${error.message}`, "error");
+    }
+  );
+}
+
+function startLocationPublishing() {
+  if (locationPublishTimer !== null) clearInterval(locationPublishTimer);
+
+  publishLocationNow();
+
+  locationPublishTimer = setInterval(
+    publishLocationNow,
+    10000
+  );
+}
+
+function stopLocationPublishing() {
+  if (locationPublishTimer !== null) clearInterval(locationPublishTimer);
+  locationPublishTimer = null;
 }
 
 // ---------- Model URL ----------
@@ -409,7 +448,6 @@ function describeDetection({mode, detection, detections}) {
 }
 
 // ---------- Bin mapping editor ----------
-// Lists the COCO objects (when detection is used) and the loaded classifier's classes (when it is used).
 function binMappingRow(label, allowNoRule) {
   const key = label.toLowerCase();
   const options = [...Object.entries(BINS).map(([k, b]) => [k, b.name]), ["ignore", allowNoRule ? "No item (e.g. unknown/background)" : "Ignore (not the item)"]];
@@ -538,7 +576,6 @@ async function runSelfTest() {
     for (const [file, ref] of Object.entries(expected)) {
       const {predictions} = await model.predict(await loadImage(SELFTEST_DIR + file), {region: "full", preview: $("inputPreview")});
       const top = predictions.reduce((a, b) => b.probability > a.probability ? b : a);
-      // Compare every class probability with the reference (robust even when two classes are close).
       const diff = Math.max(...predictions.map(p => Math.abs(p.probability - (ref.probabilities[p.className] ?? 0))));
       const ok = diff < 0.1;
       passed += ok;
@@ -553,7 +590,7 @@ async function runSelfTest() {
   finally { busy.selfTest = false; updateControls(); }
 }
 
-// Classifies a still photo (from the gallery or the phone's camera app) without the live video path.
+// Classifies a still photo
 async function classifyPhoto() {
   const file = $("photoInput").files[0];
   if (!file) return;
@@ -562,7 +599,6 @@ async function classifyPhoto() {
     const url = URL.createObjectURL(file);
     const img = await loadImage(url);
     URL.revokeObjectURL(url);
-    // Downscale large phone photos before classification.
     const scale = Math.min(1, 800 / Math.max(img.naturalWidth, img.naturalHeight));
     const canvas = document.createElement("canvas");
     canvas.width = Math.round(img.naturalWidth * scale); canvas.height = Math.round(img.naturalHeight * scale);
@@ -578,11 +614,9 @@ async function classifyPhoto() {
   finally { $("photoInput").value = ""; }
 }
 
-// Draws the model's region on top of the video so users can frame the item.
 function updateRegionGuide() {
   const video = $("camera"), guide = $("regionGuide");
   const vw = video.videoWidth, vh = video.videoHeight;
-  // In detection mode the region is only used when nothing is detected and the fallback is "centre".
   const regionUsed = !usesDetection() || $("fallback").value === "centre";
   if (!vw || !vh || !regionUsed || $("region").value === "full") { guide.hidden = true; return; }
   const {scale, ox, oy} = videoToScreen(video);
@@ -592,7 +626,6 @@ function updateRegionGuide() {
   guide.hidden = false;
 }
 
-// Region of the camera frame sent to the model: "full" frame, or a centred square with optional zoom.
 function regionRect(width, height, region) {
   if (region === "full") return { x: 0, y: 0, w: width, h: height };
   const zoom = { zoom15: 1.5, zoom2: 2 }[region] ?? 1;
@@ -600,11 +633,8 @@ function regionRect(width, height, region) {
   return { x: Math.floor((width - size) / 2), y: Math.floor((height - size) / 2), w: size, h: size };
 }
 
-// Wraps any TF.js image classifier in the app's interface:
-// predict(source, {region, preview}) -> {predictions: [{className, probability}], stats: {brightness, contrast}}
-// source can be a <video>, <img> or <canvas>; preview is an optional canvas showing exactly what the model sees.
 function wrapTfjsModel(net, {labels, normalization, source, name}) {
-  const inputShape = net.inputs[0].shape;          // e.g. [null, 224, 224, 3]
+  const inputShape = net.inputs[0].shape;
   const height = inputShape[1] > 0 ? inputShape[1] : 224;
   const width = inputShape[2] > 0 ? inputShape[2] : 224;
   const channels = inputShape[3] > 0 ? inputShape[3] : 3;
@@ -615,10 +645,9 @@ function wrapTfjsModel(net, {labels, normalization, source, name}) {
     labels = Array.from({length: outputSize}, (_, i) => labels[i] ?? `Class ${i + 1}`);
   }
 
-  // Crop the chosen region and resize to the model's input size. Result: [H, W, 3] float, 0-255.
   function cropResize(source, region) {
     return tf.tidy(() => {
-      let img = tf.browser.fromPixels(source);       // [H, W, 3] int32
+      let img = tf.browser.fromPixels(source);
       const r = regionRect(img.shape[1], img.shape[0], region);
       if (r.w !== img.shape[1] || r.h !== img.shape[0]) img = img.slice([r.y, r.x, 0], [r.h, r.w, 3]);
       return tf.image.resizeBilinear(img, [height, width]).toFloat();
@@ -641,13 +670,11 @@ function wrapTfjsModel(net, {labels, normalization, source, name}) {
         let out = net.predict(normalise(view));
         if (Array.isArray(out)) out = out[0];
         out = out.squeeze();
-        // Apply softmax if the model outputs logits rather than probabilities.
         const sum = out.sum().dataSync()[0], min = out.min().dataSync()[0];
         return (min < 0 || Math.abs(sum - 1) > 0.01) ? tf.softmax(out) : out;
       });
       const values = await scores.data();
       scores.dispose();
-      // Brightness = mean pixel value; contrast = standard deviation. Near-zero contrast means a blank frame.
       const stats = tf.tidy(() => { const {mean, variance} = tf.moments(view);
         return { brightness: mean.dataSync()[0], contrast: Math.sqrt(variance.dataSync()[0]) }; });
       if (preview) {
@@ -659,7 +686,6 @@ function wrapTfjsModel(net, {labels, normalization, source, name}) {
     } finally { view.dispose(); }
   }
 
-  // Warm up once so the first real frame is not slow.
   tf.tidy(() => { net.predict(tf.zeros([1, height, width, channels])); });
 
   return { predict, labels, getTotalClasses: () => labels.length, dispose: () => net.dispose(), source,
@@ -691,8 +717,6 @@ async function loadModel() {
   $("className").textContent = "—"; $("predictions").replaceChildren();
 }
 
-// Loads whatever the chosen pipeline needs: the material classifier, plus the detector in hybrid mode.
-// The classifier is only loaded when the pipeline uses it (not in the default COCO → bin mode).
 async function loadPipeline() {
   if (needsClassifier() && !model) await loadModel();
   if (usesDetection() && !detector) {
@@ -742,7 +766,6 @@ function modelSettingsChanged() {
   log("Model settings changed; the model will be reloaded on next start.");
 }
 
-// ---------- Camera ----------
 function cameraErrorMessage(error) {
   switch (error.name) {
     case "NotAllowedError": return "Camera permission denied. Allow camera access in the browser site settings.";
@@ -794,7 +817,7 @@ function stopAll() {
   $("camera").srcObject = null;
   $("regionGuide").hidden = true;
   drawDetections();
-  showNoItem("—", "Stopped. Tap Start to begin.");   // never leave an old result on screen
+  showNoItem("—", "Stopped. Tap Start to begin.");
   $("cameraMessage").textContent = "Camera stopped";
   $("cameraMessage").classList.remove("hidden");
   updateControls();
@@ -803,7 +826,6 @@ function stopAll() {
   if (wasActive) log("Camera stopped.");
 }
 
-// ---------- Result display ----------
 function showBin(bin) {
   const badge = $("binBadge"), info = BINS[bin];
   badge.style.background = info?.colour ?? "#dce6eb";
@@ -812,7 +834,6 @@ function showBin(bin) {
   badge.querySelector("span").textContent = info ? info.description : "This label is not in the bin mapping.";
 }
 
-// Shows the bin, the label that decided it, and the runners-up (other objects, or other classifier classes).
 function showResult(result) {
   showBin(result.bin);
   setText("className", result.label);
@@ -826,7 +847,6 @@ function showResult(result) {
   }));
 }
 
-// Nothing detected: show "No item" and restart the stable-frame count, so nothing is published.
 function showNoItem(title = "No item", hint = "Hold one item in front of the camera.") {
   const badge = $("binBadge");
   badge.style.background = "#dce6eb"; badge.style.color = "#163247";
@@ -842,7 +862,6 @@ function updateStability(key) {
   else { candidate = key; candidateFrames = 1; }
 }
 
-// frame = result of analyseFrame (null for manual tests). The bounding box is normalised to 0-1 of the frame.
 function buildPayload(result, inferenceMs, source="camera", frame=null) {
   const d = frame?.detection, [fw, fh] = d ? sourceSize($("camera")) : [1, 1];
   const round = v => Number(v.toFixed(4));
@@ -893,7 +912,6 @@ function publishPayload(payload) {
   );
 }
 
-// Publishes when the same label and bin are seen for enough frames with enough confidence.
 function considerPublish(result, inferenceMs, frame) {
   const threshold=Number(value("threshold")), required=Number(value("stableFrames")), cooldown=Number(value("cooldown"));
   const key=`${result.label}|${result.bin}`;
@@ -901,7 +919,6 @@ function considerPublish(result, inferenceMs, frame) {
   const now=Date.now(), stable=candidateFrames>=required, confident=result.confidence>=threshold;
   const changed=key!==lastPublishedClass, cooldownPassed=now-lastPublishedAt>=cooldown;
   if (stable && confident && (changed || cooldownPassed)) {
-    // Without MQTT, keep classifying but do not try to publish (and do not flood the log).
     if (!mqttClient?.connected) return;
     if (publishPayload(buildPayload(result,inferenceMs,"camera",frame))) { lastPublishedClass=key; lastPublishedAt=now; candidateFrames=0; }
   }
@@ -925,12 +942,10 @@ async function inferenceLoop() {
     }
     inferenceErrors = 0;
   } catch (error) {
-    // Tolerate occasional errors (e.g. a frame lost during rotation); stop only if they keep happening.
     inferenceErrors += 1;
     log(`Inference error (${inferenceErrors}/5): ${error.message}`, "error");
     if (inferenceErrors >= 5) { log("Stopping after repeated inference errors.", "error"); stopAll(); return; }
   }
-  // Limit load on an old tablet. Approximately 4 inferences/second maximum.
   await new Promise(resolve=>setTimeout(resolve,250));
   animationId=requestAnimationFrame(inferenceLoop);
 }
@@ -948,7 +963,6 @@ async function start() {
   finally { busy.starting=false; updateControls(); }
 }
 
-// ---------- MQTT ----------
 function normalizeBrokerUrl(raw) {
   let url = raw.trim();
   if (!url) throw new Error("Broker URL is empty.");
@@ -980,6 +994,7 @@ function setMqttStatus(status, level="info") {
 
 function disconnectMqtt() {
   if (!mqttClient) return;
+  stopLocationPublishing();
   mqttClient.removeAllListeners();
   mqttClient.end(true);
   mqttClient = null; subscribedTopic = "";
@@ -1002,7 +1017,7 @@ function connectMqtt() {
   $("mqttButton").textContent = "Disconnect MQTT";
   try { mqttClient=mqtt.connect(url,options); }
   catch (error) { log(`MQTT connect failed: ${error.message}`, "error"); mqttClient=null; $("mqttButton").textContent="Connect MQTT"; return; }
-  mqttClient.on("connect",()=>{setMqttStatus("Connected"); setMqttButtons(true);});
+  mqttClient.on("connect",()=>{setMqttStatus("Connected"); setMqttButtons(true); startLocationPublishing();});
   mqttClient.on("reconnect",()=>setMqttStatus("Reconnecting…", "warn"));
   mqttClient.on("offline",()=>{setMqttStatus("Offline", "warn"); setMqttButtons(false);});
   mqttClient.on("close",()=>{setMqttStatus("Disconnected", "warn"); setMqttButtons(false);});
@@ -1025,7 +1040,7 @@ function toggleSubscribe() {
   mqttClient.subscribe(topic, {qos:1}, (error, granted) => {
     if (error) return log(`Subscribe failed: ${error.message}`, "error");
     if (granted?.[0]?.qos === 128) return log(`Broker rejected subscription to ${topic}.`, "error");
-    subscribedTopic = topic; updateSubscribeUi(); log(`Subscribed to ${topic}.`);
+    subscribedTopic = topic; updateSubscribeUi(); log(`Subscribed from ${topic}.`);
   });
 }
 
@@ -1058,7 +1073,6 @@ function publishTest() {
   publishText(text, "custom test message");
 }
 
-// ---------- Wiring ----------
 $("startButton").addEventListener("click",start);
 $("loadModelButton").addEventListener("click",loadModelButton);
 $("modelSource").addEventListener("change",()=>{updateModelSourceUi(); modelSettingsChanged();});
@@ -1070,7 +1084,7 @@ $("fallback").addEventListener("change",pipelineChanged);
 $("resetBinsButton").addEventListener("click",resetBinMapping);
 $("region").addEventListener("change",updateRegionGuide);
 $("camera").addEventListener("loadedmetadata",updateRegionGuide);
-$("camera").addEventListener("resize",updateRegionGuide);   // fires when the phone rotates
+$("camera").addEventListener("resize",updateRegionGuide);
 window.addEventListener("resize",updateRegionGuide);
 $("selfTestButton").addEventListener("click",runSelfTest);
 $("photoInput").addEventListener("change",classifyPhoto);
@@ -1091,7 +1105,7 @@ $("clearLogButton").addEventListener("click",clearLog);
 $("errorsOnly").addEventListener("change",e=>$("eventLog").classList.toggle("errors-only", e.target.checked));
 window.addEventListener("error",e=>log(`Script error: ${e.message}`,"error"));
 window.addEventListener("unhandledrejection",e=>log(`Unhandled error: ${e.reason?.message || e.reason}`,"error"));
-window.addEventListener("pagehide",()=>{stopAll(); if(mqttClient)mqttClient.end(true);});
+window.addEventListener("pagehide",()=>{stopAll(); stopLocationPublishing(); if(mqttClient)mqttClient.end(true);});
 loadSettings();
 updateModelSourceUi();
 pipelineChanged();
