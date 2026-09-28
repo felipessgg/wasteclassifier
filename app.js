@@ -1,25 +1,5 @@
 "use strict";
 
-/* =====================================================================================================
-   SCU Smart Waste Terminal: student guide to this file
-
-   WHAT HAPPENS, IN ORDER
-     camera frame -> analyseFrame() (COCO / Teachable Machine model) -> result {label, confidence, bin}
-       -> considerPublish() (is it stable, confident and not a repeat?) -> buildPayload() (make the JSON)
-       -> publishPayload() -> publishText() -> MQTT broker -> dashboard.html (see dashboard.js)
-
-   WHERE TO CUSTOMISE (search the file for the name in capitals or the function name)
-     * MQTT message content ............ buildPayload()      (add / rename / remove JSON fields)
-     * When a message is sent .......... considerPublish()    (threshold, stable frames, cooldown)
-     * Topic, broker, credentials ...... the "MQTT test" panel in index.html, and connectMqtt() below
-     * What arrives from other devices . showReceived() and the "message" handler in connectMqtt()
-     * Which bin an item goes in ....... bins.js (or the "Bin mapping" panel in the page)
-     * Sending a NEW kind of message ... see "ADDING YOUR OWN MESSAGE TYPE" above publishTest()
-
-   The dashboard reads these messages, so if you rename a field here, change dashboard.js to match
-   (handleClassification() there).
-   ===================================================================================================== */
-
 const $ = (id) => document.getElementById(id);
 const fields = ["pipeline","detScore","fallback","modelSource","modelUrl","normalization","backend","region","deviceId","mqttTopic","subscribeTopic","brokerUrl","threshold","stableFrames","cooldown","mqttUsername","locationPrecision"];
 const STORAGE_KEY = "prog6002-classifier", LOG_VISIBLE_KEY = "prog6002-log-visible", SETTINGS_VERSION = 2;
@@ -862,37 +842,6 @@ function updateStability(key) {
   else { candidate = key; candidateFrames = 1; }
 }
 
-// ---------- MQTT MESSAGE FORMAT (the "contract" with the dashboard) ----------
-// MQTT only moves text. We send one JSON object per classified item, for example:
-//
-//   {
-//     "schema_version": 2,                     version of THIS format; bump it when you make breaking changes
-//     "message_type": "waste_classification",  lets a receiver tell message kinds apart (the dashboard switches on it)
-//     "device_id": "team01-tablet01",          who sent it (from the "Device ID" box); use a unique id per device
-//     "sequence": 17,                          counts up from 1 each page load; receivers use it to spot lost/duplicate messages
-//     "timestamp": "2026-03-10T02:15:00.000Z", when it was sent, ISO 8601 in UTC
-//     "source": "camera",                      "camera" for real detections, "manual_test" for the test button
-//     "pipeline": "coco",                      which pipeline made the result (coco | classify | hybrid)
-//     "bin": "yellow",                         key of BINS in bins.js, or null when the item has no bin
-//     "bin_description": "Recycling",
-//     "classification": "bottle",              the label the model produced
-//     "confidence": 0.93,                      0..1, from the model
-//     "detected_object": { "label": "bottle", "confidence": 0.91, "bbox": [x, y, w, h] } or null,
-//                                              bbox is normalised 0..1 of the frame (COCO / hybrid only)
-//     "inference_ms": 48,                      how long the model took (performance monitoring)
-//     "model": "coco-ssd-lite",
-//     "alternatives": [ { "label": "cup", "confidence": 0.04, "bin": "red" } ],   runner-up guesses
-//     "location": { "latitude": -28.8034, "longitude": 153.2886, "accuracy_m": 10, ... } or null
-//   }
-//
-// HOW TO CUSTOMISE
-//   * Add a field: add a line to the object returned below, e.g.  "bin_id": "bin-A7",  or
-//     "fill_level_pct": Number($("fillLevel").value)  if you add an <input id="fillLevel"> in index.html.
-//   * Remove a field you do not need (smaller messages = less bandwidth), but check the dashboard does not use it.
-//   * Rename a field: change it here AND in dashboard.js, or the dashboard will silently show nothing.
-//   * Keep it valid JSON: numbers as numbers, text as strings, null (not undefined) for "no value".
-//   * Never put secrets in the payload: on a public broker anyone can read it. Images are deliberately not sent.
-//
 // frame = result of analyseFrame (null for manual tests). The bounding box is normalised to 0-1 of the frame.
 function buildPayload(result, inferenceMs, source="camera", frame=null) {
   const d = frame?.detection, [fw, fh] = d ? sourceSize($("camera")) : [1, 1];
@@ -912,15 +861,6 @@ function buildPayload(result, inferenceMs, source="camera", frame=null) {
   };
 }
 
-// Sends one text message to the broker: the ONLY place that calls mqttClient.publish().
-//   topic   like a folder path, "/" separated, e.g. "prog6002/2026/team01-tablet01/classification".
-//           Subscribers choose which topics they receive; "+" (one level) and "#" (everything below) are wildcards
-//           for SUBSCRIBING only, never use them in a publish topic. Use a distinct topic per message kind
-//           (e.g. ".../classification", ".../status") so a receiver can subscribe to just what it needs.
-//   qos     0 = at most once (may be lost), 1 = at least once (may arrive twice: that is why the dashboard
-//           de-duplicates), 2 = exactly once (slowest, not offered by every broker).
-//   retain  false = broker forgets the message after delivery. true = broker keeps the LAST message on that
-//           topic and gives it to any new subscriber immediately (good for "current status", bad for events).
 function publishText(text, description) {
   if (!mqttClient?.connected) { log("Cannot publish: MQTT is disconnected.", "error"); return false; }
   const topic=value("mqttTopic");
@@ -934,17 +874,26 @@ function publishText(text, description) {
 }
 
 function publishPayload(payload) {
-  const bin = BINS[payload.bin]?.name ?? "no bin";
-  return publishText(JSON.stringify(payload), `${payload.classification} → ${bin} (${(payload.confidence*100).toFixed(1)}%)`);
+  const commands = {
+    yellow: "recycled",
+    green: "organic",
+    red: "landfill"
+  };
+
+  const command = commands[payload.bin];
+
+  if (!command) {
+    log(`No sorting command for bin: ${payload.bin}`, "warn");
+    return false;
+  }
+
+  return publishText(
+    command,
+    `${payload.classification} → ${command} (${(payload.confidence * 100).toFixed(1)}%)`
+  );
 }
 
-// Decides WHEN to publish. Without this rule the app would send ~4 messages per second for the same bottle.
-// A message is sent only when ALL of these hold:
-//   stable    the same label+bin was seen in "Stable frames" consecutive frames (removes flicker)
-//   confident the model confidence is at least "Confidence threshold"
-//   new/due   it is a different item from the last one published, OR the "Publish cooldown" has passed
-// All three numbers are boxes on the "Classifier configuration" panel. Change the logic here if your
-// project needs something else (e.g. publish once per item and wait until the item is removed).
+// Publishes when the same label and bin are seen for enough frames with enough confidence.
 function considerPublish(result, inferenceMs, frame) {
   const threshold=Number(value("threshold")), required=Number(value("stableFrames")), cooldown=Number(value("cooldown"));
   const key=`${result.label}|${result.bin}`;
@@ -1039,12 +988,6 @@ function disconnectMqtt() {
   log("MQTT disconnected by user.");
 }
 
-// Connects to the broker with the mqtt.js library (loaded by a <script> tag in index.html; it provides `mqtt`).
-// Browsers cannot open raw TCP sockets, so the broker must offer MQTT over WebSockets (wss://host:port/path).
-// Options below: clientId must be unique per connection (a duplicate kicks the other client off);
-// clean:true = start with no saved subscriptions; reconnectPeriod = retry every 3 s if the link drops;
-// keepalive = ping every 30 s so the broker knows we are alive.
-// The events registered at the bottom are how mqtt.js reports things: "connect", "message", "error", ...
 function connectMqtt() {
   if (mqttClient) { disconnectMqtt(); return; }
   if (typeof mqtt === "undefined") { log("MQTT library failed to load. Check the internet connection and reload.", "error"); return; }
@@ -1067,10 +1010,6 @@ function connectMqtt() {
   mqttClient.on("message",showReceived);
 }
 
-// Subscribing tells the broker "send me every message published to topics matching this filter".
-// The messages then arrive in the mqttClient.on("message", ...) handler in connectMqtt() -> showReceived().
-// This tablet only DISPLAYS what it receives; to make it react (e.g. show an "empty the bin" alert),
-// parse the message in showReceived() and act on it. Note that subscriptions are lost on a clean reconnect.
 function toggleSubscribe() {
   if (!mqttClient?.connected) { log("Cannot subscribe: MQTT is disconnected.", "error"); return; }
   if (subscribedTopic) {
@@ -1094,11 +1033,6 @@ function prettyPrint(text) {
   try { return JSON.stringify(JSON.parse(text), null, 2); } catch { return text; }
 }
 
-// Called for every incoming message. `message` is a Buffer (bytes), so .toString() turns it into text.
-// To use the data rather than just show it:
-//     let data; try { data = JSON.parse(message.toString()); } catch { return; }   // may not be JSON!
-//     if (data.message_type === "command") { ... }
-// Always treat incoming data as untrusted and write it to the page with textContent, never innerHTML.
 function showReceived(topic, message) {
   received += 1; setText("receivedCount", received);
   const item = document.createElement("li");
@@ -1115,21 +1049,6 @@ function clearReceived() {
   $("receivedLog").replaceChildren(); received = 0; setText("receivedCount", 0);
 }
 
-// ---------- ADDING YOUR OWN MESSAGE TYPE ----------
-// Example: publish a "bin_status" message (a measured fill level) to a second topic. dashboard.js already
-// understands this shape (see handleBinStatus() there):
-//
-//   function publishBinStatus(levelPct) {
-//     const topic = value("mqttTopic").replace(/classification$/, "binstatus");   // ".../binstatus"
-//     const msg = { schema_version:1, message_type:"bin_status", device_id:value("deviceId"),
-//                   timestamp:new Date().toISOString(), bins:{ yellow:{ level_pct:levelPct } },
-//                   location: locationPayload() };
-//     mqttClient.publish(topic, JSON.stringify(msg), {qos:1});
-//   }
-//
-// Steps: (1) pick a new "message_type" and a topic, (2) build the object, (3) JSON.stringify and publish,
-// (4) add a matching case in dashboard.js handleMessage(). You can try it without any code by pasting the JSON
-// into the "Publish test message" box below, which sends exactly what you type to the publish topic.
 function publishTest() {
   const text = $("testMessage").value.trim();
   if (!text) {
