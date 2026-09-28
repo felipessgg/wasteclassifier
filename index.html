@@ -169,7 +169,7 @@
         <button id="loadModelButton">Load model</button>
       </div>
       <div class="grid two">
-        <label>Device ID <input id="deviceId" value="team01-tablet01"></label>
+        <label>Device ID <input id="deviceId" value="BIN"></label>
         <label>Confidence threshold <input id="threshold" type="number" min="0.1" max="1" step="0.05" value="0.6"></label>
         <label>Stable frames <input id="stableFrames" type="number" min="1" max="20" value="3"></label>
         <label>Publish cooldown (ms) <input id="cooldown" type="number" min="500" step="500" value="5000"></label>
@@ -179,9 +179,9 @@
     <section class="panel">
       <h2>MQTT test</h2>
       <div class="grid two">
-        <label>Broker WebSocket URL <input id="brokerUrl" inputmode="url" value="wss://broker.hivemq.com:8884/mqtt"
+        <label>Broker WebSocket URL <input id="brokerUrl" inputmode="url" value="wss://5d2b1e680bc4427bbacc7535a47a72eb.s1.eu.hivemq.cloud:8884/mqtt"
           placeholder="broker.hivemq.com:8884/mqtt"></label>
-        <label>Publish topic <input id="mqttTopic" value="prog6002/2026/team01-tablet01/classification"></label>
+        <label>Publish topic <input id="mqttTopic" value="smartbin/BIN/command/sort"></label>
       </div>
       <p class="help"><code>wss://</code> is added automatically if the URL has no scheme.</p>
       <div class="location-fields">
@@ -201,7 +201,7 @@
       <details>
         <summary>Optional broker credentials</summary>
         <div class="grid two">
-          <label>Username <input id="mqttUsername" autocomplete="username"></label>
+          <label>Username <input id="mqttUsername" autocomplete="username" value="user1"></label>
           <label>Password <input id="mqttPassword" type="password" autocomplete="current-password"></label>
         </div>
         <label class="inline"><input id="rememberPassword" type="checkbox"> Remember password on this device</label>
@@ -227,7 +227,7 @@
         <div>
           <h3>Subscribe</h3>
           <label>Subscribe topic (wildcards + and # allowed)
-            <input id="subscribeTopic" value="prog6002/2026/team01-tablet01/#">
+            <input id="subscribeTopic" value="smartbin/BIN/#">
           </label>
           <div class="actions">
             <button id="subscribeButton" disabled>Subscribe</button>
